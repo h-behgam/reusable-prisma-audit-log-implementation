@@ -89,10 +89,17 @@ export interface AuditMiddlewareConfig {
   excludedModels?: string[];
 
   /**
-   * Fields that should be redacted in both oldData and newData snapshots.
-   * Case-insensitive matching.
+   * Fields whose values should be replaced with "[REDACTED]" in both oldData
+   * and newData snapshots. Case-insensitive matching.
    */
   sensitiveFields?: string[];
+
+  /**
+   * Fields that should be completely removed from both oldData and newData
+   * snapshots. Use this when you never want the field name or value to appear
+   * in the audit log (e.g. passwords, raw tokens).
+   */
+  omitFields?: string[];
 
   /**
    * When true, batch operations (createMany/updateMany/deleteMany) emit one

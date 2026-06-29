@@ -11,6 +11,7 @@ export {
   isEqual,
   mapPrismaActionToAuditAction,
   mergeMetadata,
+  omitFields,
   redactSensitiveFields,
 } from "./utils";
 export type {

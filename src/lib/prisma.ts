@@ -7,8 +7,16 @@ import { createAuditExtension } from "@/audit-log/extension";
 
 const PrismaDB = PrismaBase.$extends(
   createAuditExtension(PrismaBase, {
-    sensitiveFields: ["password", "passwordHash", "token", "secret", "creditCard"],
+    // Replace values of these exact fields with "[REDACTED]" in old_data/new_data.
+    sensitiveFields: ["password", "currentPassword", "confirmPassword", "passwordHash", "token", "secret", "creditCard"],
+
+    // Completely remove these exact fields from old_data/new_data/batch args.
+    // Use this when you never want the field name or value to appear in logs.
+    omitFields: [],
+
+    // Never audit these models.
     excludedModels: ["AuditLog", "Session", "VerificationToken"],
+
     onError: (error, entry) => {
       // Forward to your observability platform (Sentry, Datadog, etc.)
       console.error("[AuditLogger] write failed", error, entry);

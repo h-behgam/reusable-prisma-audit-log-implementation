@@ -16,7 +16,8 @@ such as `@prisma/adapter-pg`.
   `delete`, batch operations).
 - **Manual logging** API for explicit control and extra metadata.
 - **Diff engine**: Computes `changedFields` automatically for `UPDATE`/`UPSERT`.
-- **PII redaction**: Configurable field redaction across all snapshots.
+- **PII handling**: Replace values with `"[REDACTED]"` (`sensitiveFields`) or
+  remove fields entirely (`omitFields`).
 - **Request context**: Captures IP, user agent, path, and HTTP method.
 - **Batch summaries**: Best-effort logging for `createMany`/`updateMany`/`deleteMany`.
 - **Error isolation**: Audit write failures never break business operations.
@@ -49,7 +50,10 @@ const basePrisma = new PrismaClient({ adapter });
 
 const PrismaDB = basePrisma.$extends(
   createAuditExtension(basePrisma, {
-    sensitiveFields: ["password", "token", "secret"],
+    // Replace values of these exact fields with "[REDACTED]" (case-insensitive).
+    sensitiveFields: ["password", "currentPassword", "confirmPassword", "passwordHash", "token", "secret", "creditCard"],
+    // Completely remove these exact fields from snapshots
+    omitFields: [],
     excludedModels: ["AuditLog", "Session"],
   })
 );
@@ -83,6 +87,8 @@ import { AuditLogger, getAuditRequestContext } from "@/audit-log";
 const audit = new AuditLogger(PrismaDB, {
   userId: currentUser.id,
   requestContext: getAuditRequestContext(request),
+  sensitiveFields: ["password", "token", "secret"], // value becomes "[REDACTED]"
+  omitFields: ["rawPassword"],                       // field is removed entirely
 });
 
 await audit.log({
@@ -94,6 +100,20 @@ await audit.log({
   metadata: { reason: "Customer request" },
 });
 ```
+
+## `sensitiveFields` vs `omitFields`
+
+| Option | Behavior | Example output |
+|---|---|---|
+| `sensitiveFields` | Keeps the field name, replaces the value with `"[REDACTED]"` | `{ "password": "[REDACTED]" }` |
+| `omitFields` | Removes the field completely from `old_data` / `new_data` | `{ "email": "a@b.com" }` (no password) |
+
+Matching for both options is **exact and case-insensitive**. For example, `"password"` only matches
+fields literally named `password`, `Password`, or `PASSWORD`. It does **not** match
+`currentPassword`, `confirmPassword`, or `passwordHash`; list those explicitly if needed.
+
+Use `sensitiveFields` when you want to know that a field existed/changed without storing its value.
+Use `omitFields` when the field name itself should never appear in the audit log.
 
 ## Legacy middleware (not for Driver Adapters)
 

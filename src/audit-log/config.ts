@@ -31,6 +31,11 @@ export class AuditConfigBuilder {
     return this;
   }
 
+  omitFields(...fields: string[]): this {
+    this.config.omitFields = fields;
+    return this;
+  }
+
   includeModels(...models: string[]): this {
     this.config.includedModels = models;
     return this;

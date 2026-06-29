@@ -70,6 +70,8 @@ const manualCode = `import { AuditLogger } from "@/audit-log";
 const audit = new AuditLogger(PrismaDB, {
   userId: currentUser.id,
   requestContext: getAuditRequestContext(request),
+  sensitiveFields: ["password", "passwordHash", "token"], // value -> "[REDACTED]"
+  omitFields: ["rawPassword"],                            // field removed entirely
 });
 
 await audit.log({
@@ -193,6 +195,7 @@ export default function App() {
         email: "jane@example.com",
         name: "Jane",
         role: "USER",
+        password: "plain-password",
         passwordHash: "super-secret-hash",
       },
       null,
@@ -206,6 +209,7 @@ export default function App() {
         email: "jane.doe@example.com",
         name: "Jane Doe",
         role: "ADMIN",
+        password: "new-plain-password",
         passwordHash: "super-secret-hash",
       },
       null,
@@ -240,10 +244,9 @@ export default function App() {
 
     // Use a fake Prisma client that stores the produced entry.
     let lastEntry: AuditEntry | null = null;
-    const fakePrisma = {
+    const fakePrisma: { auditLog: { create: (args: { data: AuditEntry }) => Promise<void> } } = {
       auditLog: {
-        create: async (...args: unknown[]) => {
-          const data = (args[0] as { data: AuditEntry }).data;
+        create: async ({ data }) => {
           lastEntry = data;
         },
       },
@@ -257,7 +260,8 @@ export default function App() {
         requestPath: "/api/users/1",
         requestMethod: "PUT",
       },
-      sensitiveFields: ["passwordHash", "token", "secret"],
+      sensitiveFields: ["password", "passwordHash"],
+      omitFields: [],
     });
 
       void audit
@@ -271,16 +275,8 @@ export default function App() {
         })
         .then(() => {
           if (!lastEntry) return;
-          const redactedOld = redactSensitiveFields(parsedOld, [
-            "passwordHash",
-            "token",
-            "secret",
-          ]) as Record<string, unknown>;
-          const redactedNew = redactSensitiveFields(parsedNew, [
-            "passwordHash",
-            "token",
-            "secret",
-          ]) as Record<string, unknown>;
+          const redactedOld = redactSensitiveFields(parsedOld, ["password", "passwordHash"]) as Record<string, unknown>;
+          const redactedNew = redactSensitiveFields(parsedNew, ["password", "passwordHash"]) as Record<string, unknown>;
           const diff = diffObjects(redactedOld, redactedNew);
           const entry = lastEntry;
           setLogs((prev) => [

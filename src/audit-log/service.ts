@@ -8,27 +8,42 @@ import type {
   PrismaMiddlewareParams,
 } from "./types";
 import {
+  compactSnapshot,
   deepClone,
   diffObjects,
   mapPrismaActionToAuditAction,
   mergeMetadata,
+  omitFields,
   redactSensitiveFields,
 } from "./utils";
 
 /**
- * Generic Prisma-like client shape required by AuditLogger.
- *
- * We deliberately avoid importing the generated Prisma client so this package
- * stays reusable across projects and across Prisma versions. The signatures
- * are intentionally permissive so that extended Prisma clients (`$extends`)
- * and Driver Adapter clients are accepted without structural type conflicts.
+ * Minimal shape of the Prisma `auditLog` delegate used internally by
+ * AuditLogger. The public constructor accepts `unknown` so that any Prisma
+ * client (standard, extended, or Driver Adapter) can be passed without
+ * importing the generated client types.
  */
-export interface PrismaLikeClient {
-  auditLog: {
-    create: (...args: unknown[]) => Promise<unknown>;
-    createMany?: (...args: unknown[]) => Promise<unknown>;
-  };
-  [key: string]: unknown;
+interface AuditLogDelegate {
+  create: (args: { data: AuditEntry }) => Promise<unknown>;
+  createMany?: (args: { data: AuditEntry[]; skipDuplicates?: boolean }) => Promise<unknown>;
+}
+
+function getAuditLogDelegate(prisma: unknown): AuditLogDelegate {
+  const record = prisma as Record<string, unknown>;
+  const auditLog = record.auditLog;
+
+  if (
+    auditLog &&
+    typeof auditLog === "object" &&
+    "create" in auditLog &&
+    typeof (auditLog as Record<string, unknown>).create === "function"
+  ) {
+    return auditLog as unknown as AuditLogDelegate;
+  }
+
+  throw new Error(
+    "[AuditLogger] Provided prisma client does not have an auditLog delegate."
+  );
 }
 
 /**
@@ -51,15 +66,17 @@ export interface PrismaLikeClient {
  */
 export class AuditLogger {
   private readonly userIdResolver: AuditUserResolver;
+  private readonly auditLog: AuditLogDelegate;
 
   constructor(
-    private readonly prisma: PrismaLikeClient,
+    private readonly prisma: unknown,
     private readonly config: AuditLoggerConfig = {}
   ) {
     this.userIdResolver =
       typeof config.userId === "function"
         ? config.userId
         : () => (config.userId as number | null | undefined) ?? null;
+    this.auditLog = getAuditLogDelegate(prisma);
   }
 
   /**
@@ -180,39 +197,43 @@ export class AuditLogger {
 
   /**
    * Build a complete AuditEntry from a user input, applying defaults,
-   * redaction, and diff calculation.
+   * redaction, diff calculation, and null-field compaction.
+   *
+   * Diff is computed BEFORE redaction so that fields whose raw values differ
+   * but become identical after redaction (e.g. password) are still recorded as
+   * changed.
    */
   private async buildEntry(input: CreateAuditLogInput): Promise<AuditEntry> {
     const userId = await this.userIdResolver();
     const requestContext = this.config.requestContext ?? {};
 
-    const oldData = input.oldData ?? {};
-    const newData = input.newData ?? {};
+    const omittedOld = omitFields(input.oldData ?? {}, this.config.omitFields ?? []) as Record<string, unknown>;
+    const omittedNew = omitFields(input.newData ?? {}, this.config.omitFields ?? []) as Record<string, unknown>;
 
-    const redactedOld = redactSensitiveFields(
-      oldData,
-      this.config.sensitiveFields ?? []
-    ) as Record<string, unknown> | null;
-
-    const redactedNew = redactSensitiveFields(
-      newData,
-      this.config.sensitiveFields ?? []
-    ) as Record<string, unknown> | null;
+    const sensitiveFields = this.config.sensitiveFields ?? [];
 
     let changedFields: string[] | undefined;
-    let finalOldData: Record<string, unknown> | null = redactedOld;
-    let finalNewData: Record<string, unknown> | null = redactedNew;
+    let finalOldData: Record<string, unknown> | null;
+    let finalNewData: Record<string, unknown> | null;
 
-    if (input.action === "UPDATE" || input.action === "UPSERT") {
-      const diff = diffObjects(redactedOld, redactedNew);
+    if (input.action === "UPDATE") {
+      const diff = diffObjects(omittedOld, omittedNew);
       changedFields =
         input.changedFields ?? (diff.changedFields.length > 0 ? diff.changedFields : undefined);
 
-      // For updates, store only the changed fields to keep snapshots small.
-      if (input.action === "UPDATE") {
-        finalOldData = diff.oldData;
-        finalNewData = diff.newData;
-      }
+      finalOldData = compactSnapshot(
+        redactSensitiveFields(diff.oldData, sensitiveFields) as Record<string, unknown> | null
+      );
+      finalNewData = compactSnapshot(
+        redactSensitiveFields(diff.newData, sensitiveFields) as Record<string, unknown> | null
+      );
+    } else {
+      finalOldData = compactSnapshot(
+        redactSensitiveFields(omittedOld, sensitiveFields) as Record<string, unknown> | null
+      );
+      finalNewData = compactSnapshot(
+        redactSensitiveFields(omittedNew, sensitiveFields) as Record<string, unknown> | null
+      );
     }
 
     return {
@@ -237,7 +258,7 @@ export class AuditLogger {
    */
   private async persist(entry: AuditEntry): Promise<void> {
     try {
-      await this.prisma.auditLog.create({ data: entry });
+      await this.auditLog.create({ data: entry });
     } catch (error) {
       this.handleError(error as Error, entry);
     }
@@ -245,11 +266,11 @@ export class AuditLogger {
 
   private async persistMany(entries: AuditEntry[]): Promise<void> {
     try {
-      if (this.prisma.auditLog.createMany) {
-        await this.prisma.auditLog.createMany({ data: entries, skipDuplicates: true });
+      if (this.auditLog.createMany) {
+        await this.auditLog.createMany({ data: entries, skipDuplicates: true });
       } else {
         for (const entry of entries) {
-          await this.prisma.auditLog.create({ data: entry });
+          await this.auditLog.create({ data: entry });
         }
       }
     } catch (error) {
@@ -270,7 +291,7 @@ export class AuditLogger {
   /**
    * Determine whether a model should be audited based on include/exclude lists.
    */
-  private shouldAuditModel(model: string | undefined): boolean {
+  shouldAuditModel(model: string | undefined): boolean {
     if (!model) return false;
     if (model === "AuditLog") return false;
 
@@ -295,11 +316,19 @@ export class AuditLogger {
     where: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const delegate = (this.prisma as any)[model];
-      if (!delegate || typeof delegate.findUnique !== "function") return undefined;
+      const delegate = (this.prisma as Record<string, unknown>)[model];
+      if (
+        !delegate ||
+        typeof delegate !== "object" ||
+        typeof (delegate as Record<string, unknown>).findUnique !== "function"
+      ) {
+        return undefined;
+      }
 
-      const record = await delegate.findUnique({ where });
+      const findUnique = (delegate as Record<string, unknown>).findUnique as (args: {
+        where: Record<string, unknown>;
+      }) => Promise<unknown>;
+      const record = await findUnique({ where });
       return record ? (record as Record<string, unknown>) : undefined;
     } catch {
       return undefined;

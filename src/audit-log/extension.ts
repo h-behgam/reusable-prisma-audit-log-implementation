@@ -1,11 +1,27 @@
-// @ts-nocheck
-// This module is intended for Next.js backend usage with Prisma Driver
-// Adapters. It uses Prisma Client Extensions (`$extends`) which are the
-// recommended replacement for `$use` middleware when driver adapters are used.
-
 import { auditContext } from "./context";
-import { AuditLogger, type PrismaLikeClient } from "./service";
+import { AuditLogger } from "./service";
 import type { AuditLoggerConfig } from "./types";
+
+interface PrismaExtensionCallbackArgs {
+  model: string;
+  operation: string;
+  args: Record<string, unknown>;
+  query: (args: Record<string, unknown>) => Promise<unknown>;
+}
+
+interface PrismaClientWithExtends {
+  $extends: (extension: unknown) => unknown;
+}
+
+const WRITE_OPERATIONS = [
+  "create",
+  "createMany",
+  "update",
+  "updateMany",
+  "upsert",
+  "delete",
+  "deleteMany",
+];
 
 /**
  * Build a Prisma Client Extension that automatically writes audit logs.
@@ -22,56 +38,67 @@ export function createAuditExtension(
   prisma: unknown,
   config: Omit<AuditLoggerConfig, "userId" | "requestContext" | "defaultMetadata"> = {}
 ) {
-  const audit = new AuditLogger(prisma as PrismaLikeClient, {
+  const audit = new AuditLogger(prisma, {
     ...config,
     userId: () => auditContext.getUserId(),
     requestContext: auditContext.getRequestContext(),
     defaultMetadata: auditContext.getMetadata(),
   });
 
-  const prismaAny = prisma as Record<string, any>;
+  const prismaRecord = prisma as Record<string, unknown>;
+  const prismaWithExtends = prisma as PrismaClientWithExtends;
 
-  return prismaAny.$extends({
+  const findUnique = async (model: string, where: unknown): Promise<Record<string, unknown> | undefined> => {
+    const delegate = prismaRecord[model];
+    if (!delegate || typeof delegate !== "object") return undefined;
+
+    const find = (delegate as Record<string, unknown>).findUnique as
+      | ((args: { where: unknown }) => Promise<unknown>)
+      | undefined;
+    if (typeof find !== "function") return undefined;
+
+    const record = await find({ where });
+    return record ? (record as Record<string, unknown>) : undefined;
+  };
+
+  return prismaWithExtends.$extends({
     query: {
       $allModels: {
-        async create({ model, args, query }: any) {
+        async $allOperations({ model, operation, args, query }: PrismaExtensionCallbackArgs) {
+          if (!audit.shouldAuditModel(model)) return query(args);
+          if (!WRITE_OPERATIONS.includes(operation)) return query(args);
+
+          let oldRecord: Record<string, unknown> | undefined;
+
+          if (operation === "update" || operation === "upsert" || operation === "delete") {
+            oldRecord = await findUnique(model, args.where);
+          }
+
           const result = await query(args);
-          await audit.logCreate(model, result);
-          return result;
-        },
-        async update({ model, args, query }: any) {
-          const oldRecord = await prismaAny[model].findUnique({ where: args.where });
-          const result = await query(args);
-          await audit.logUpdate(model, oldRecord, result);
-          return result;
-        },
-        async upsert({ model, args, query }: any) {
-          const oldRecord = args.where
-            ? await prismaAny[model].findUnique({ where: args.where })
-            : undefined;
-          const result = await query(args);
-          await audit.logUpsert(model, oldRecord, result);
-          return result;
-        },
-        async delete({ model, args, query }: any) {
-          const oldRecord = await prismaAny[model].findUnique({ where: args.where });
-          const result = await query(args);
-          await audit.logDelete(model, oldRecord);
-          return result;
-        },
-        async createMany({ model, args, query }: any) {
-          const result = await query(args);
-          await audit.logBatchSummary({ model, action: "createMany", args }, result);
-          return result;
-        },
-        async updateMany({ model, args, query }: any) {
-          const result = await query(args);
-          await audit.logBatchSummary({ model, action: "updateMany", args }, result);
-          return result;
-        },
-        async deleteMany({ model, args, query }: any) {
-          const result = await query(args);
-          await audit.logBatchSummary({ model, action: "deleteMany", args }, result);
+
+          switch (operation) {
+            case "create":
+              await audit.logCreate(model, result as Record<string, unknown>);
+              break;
+            case "update":
+              await audit.logUpdate(model, oldRecord, result as Record<string, unknown>);
+              break;
+            case "upsert":
+              await audit.logUpsert(model, oldRecord, result as Record<string, unknown>);
+              break;
+            case "delete":
+              await audit.logDelete(model, oldRecord);
+              break;
+            case "createMany":
+            case "updateMany":
+            case "deleteMany":
+              await audit.logBatchSummary(
+                { model, action: operation, args },
+                result as Record<string, unknown>
+              );
+              break;
+          }
+
           return result;
         },
       },

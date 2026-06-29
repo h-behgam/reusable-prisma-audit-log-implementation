@@ -16,14 +16,15 @@ export async function POST(request: NextRequest) {
       email: body.email,
       name: body.name,
       role: body.role ?? "USER",
+      password: body.password, // hashed by your service layer
     },
   });
 
   // 2. Create an AuditLogger bound to the current request and user.
   const audit = new AuditLogger(PrismaDB, {
-    userId: currentUser.id, // or () => getCurrentUserId()
+    userId: currentUser.id,
     requestContext: getAuditRequestContext(request),
-    sensitiveFields: ["passwordHash", "token", "secret"],
+    sensitiveFields: ["password"], // value will become "[REDACTED]"
   });
 
   // 3. Manually write the CREATE audit entry.
