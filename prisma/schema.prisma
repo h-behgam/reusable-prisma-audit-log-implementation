@@ -1,0 +1,66 @@
+// =============================================================================
+// Reusable AuditLog Prisma Schema
+// =============================================================================
+// Copy this model into your project's prisma/schema.prisma.
+// The schema is designed to be completely model-agnostic: any table in any
+// project can be audited by the companion TypeScript service.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // or "mysql", "sqlite", "sqlserver", "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model AuditLog {
+  id Int @id @default(autoincrement())
+
+  // Who performed the action
+  userId Int? @map("user_id")
+
+  // What changed
+  model    String // e.g. "User", "Category", "Order"
+  recordId Int    @map("record_id")
+  action   String // "CREATE" | "UPDATE" | "DELETE" | "UPSERT"
+
+  // Snapshot of the data
+  oldData       Json?    @map("old_data")
+  newData       Json?    @map("new_data")
+  changedFields String[] @map("changed_fields") // only meaningful for UPDATE
+
+  // Request context
+  ipAddress     String? @map("ip_address")
+  userAgent     String? @map("user_agent")
+  requestPath   String? @map("request_path")
+  requestMethod String? @map("request_method")
+
+  // Additional metadata (tenantId, correlationId, reason, source, etc.)
+  metadata Json?
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // ---------------------------------------------------------------------------
+  // Indexes are critical for performance on large audit tables.
+  // ---------------------------------------------------------------------------
+  @@index([model, recordId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([ipAddress])
+  @@index([model, createdAt])
+  @@map("audit_logs")
+}
+
+// Example business models (replace with your own).
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String?
+  role      String   @default("USER")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
