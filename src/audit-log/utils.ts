@@ -115,8 +115,9 @@ export function compactSnapshot(
 
 /**
  * Compute a deep diff between two objects and return the changed field names
- * plus the shallow/old/new snapshots. Missing fields in the new snapshot are
- * represented as `null` so they survive JSON serialization.
+ * plus the shallow/old/new snapshots. Only keys present in the new snapshot
+ * are considered, following PATCH-like semantics where missing keys are
+ * treated as unchanged.
  */
 export function diffObjects(
   oldData: Record<string, unknown> | null | undefined,
@@ -125,10 +126,7 @@ export function diffObjects(
   const oldNormalized = oldData ?? {};
   const newNormalized = newData ?? {};
 
-  const allKeys = new Set([
-    ...Object.keys(oldNormalized),
-    ...Object.keys(newNormalized),
-  ]);
+  const allKeys = Object.keys(newNormalized);
 
   const changedFields: string[] = [];
   const oldDiff: Record<string, unknown> = {};
