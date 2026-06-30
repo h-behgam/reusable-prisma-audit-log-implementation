@@ -52,7 +52,7 @@ export interface AuditEntry {
   action: AuditAction;
   oldData: JsonValue | null;
   newData: JsonValue | null;
-  changedFields: string[] | null;
+  changedFields: string[];
   ipAddress: string | null;
   userAgent: string | null;
   requestPath: string | null;

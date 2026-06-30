@@ -243,7 +243,7 @@ export class AuditLogger {
       action: input.action,
       oldData: finalOldData as JsonValue,
       newData: finalNewData as JsonValue,
-      changedFields: changedFields ?? null,
+      changedFields: changedFields ?? [],
       ipAddress: requestContext.ipAddress ?? null,
       userAgent: requestContext.userAgent ?? null,
       requestPath: requestContext.requestPath ?? null,
