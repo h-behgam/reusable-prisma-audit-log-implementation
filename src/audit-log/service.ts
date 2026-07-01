@@ -28,6 +28,17 @@ interface AuditLogDelegate {
   createMany?: (args: { data: AuditEntry[]; skipDuplicates?: boolean }) => Promise<unknown>;
 }
 
+/**
+ * Narrow an unknown JSON value to a plain object, or return null.
+ */
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
 function getAuditLogDelegate(prisma: unknown): AuditLogDelegate {
   const record = prisma as Record<string, unknown>;
   const auditLog = record.auditLog;
@@ -126,9 +137,22 @@ export class AuditLogger {
     await this.logAfterMutation(model, action, oldRecord ?? undefined, newRecord);
   }
 
-  async logDelete(model: string, oldRecord: Record<string, unknown> | null | undefined): Promise<void> {
+  /**
+   * Log a deletion.
+   *
+   * Supports both permanent deletes (no new record) and soft deletes
+   * (the record after the soft-delete mutation is passed as `newRecord`).
+   * For soft deletes, changed fields such as `status`, `deletedAt`, and
+   * `deletedBy` are computed automatically.
+   */
+  async logDelete(
+    model: string,
+    oldRecord: Record<string, unknown> | null | undefined,
+    newRecord?: Record<string, unknown> | null
+  ): Promise<void> {
     if (!oldRecord) return;
-    const id = this.extractRecordId(oldRecord);
+
+    const id = this.extractRecordId(newRecord ?? oldRecord);
     if (id === null) return;
 
     await this.log({
@@ -136,7 +160,7 @@ export class AuditLogger {
       recordId: id,
       action: "DELETE",
       oldData: oldRecord,
-      newData: null,
+      newData: newRecord ?? null,
     });
   }
 
@@ -207,32 +231,37 @@ export class AuditLogger {
     const userId = await this.userIdResolver();
     const requestContext = this.config.requestContext ?? {};
 
-    const omittedOld = omitFields(input.oldData ?? {}, this.config.omitFields ?? []) as Record<string, unknown>;
-    const omittedNew = omitFields(input.newData ?? {}, this.config.omitFields ?? []) as Record<string, unknown>;
+    const omitList = this.config.omitFields ?? [];
+    const omittedOld = asObject(omitFields(input.oldData, omitList));
+    const omittedNew = asObject(omitFields(input.newData, omitList));
 
     const sensitiveFields = this.config.sensitiveFields ?? [];
 
-    let changedFields: string[] | undefined;
-    let finalOldData: Record<string, unknown> | null;
-    let finalNewData: Record<string, unknown> | null;
+    // A soft delete is logged as DELETE but has a new record containing the
+    // changed fields (status, deletedAt, deletedBy, etc.).
+    const isSoftDelete = input.action === "DELETE" && omittedNew !== null;
 
-    if (input.action === "UPDATE") {
+    let changedFields: string[] | undefined;
+    let finalOldData: Record<string, unknown> | null = null;
+    let finalNewData: Record<string, unknown> | null = null;
+
+    if (input.action === "UPDATE" || isSoftDelete) {
       const diff = diffObjects(omittedOld, omittedNew);
       changedFields =
         input.changedFields ?? (diff.changedFields.length > 0 ? diff.changedFields : undefined);
 
       finalOldData = compactSnapshot(
-        redactSensitiveFields(diff.oldData, sensitiveFields) as Record<string, unknown> | null
+        asObject(redactSensitiveFields(diff.oldData, sensitiveFields))
       );
       finalNewData = compactSnapshot(
-        redactSensitiveFields(diff.newData, sensitiveFields) as Record<string, unknown> | null
+        asObject(redactSensitiveFields(diff.newData, sensitiveFields))
       );
     } else {
       finalOldData = compactSnapshot(
-        redactSensitiveFields(omittedOld, sensitiveFields) as Record<string, unknown> | null
+        asObject(redactSensitiveFields(omittedOld, sensitiveFields))
       );
       finalNewData = compactSnapshot(
-        redactSensitiveFields(omittedNew, sensitiveFields) as Record<string, unknown> | null
+        asObject(redactSensitiveFields(omittedNew, sensitiveFields))
       );
     }
 
